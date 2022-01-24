@@ -23,7 +23,7 @@
 */
 
 const fs = require('fs')
-const { graphql } = require("@octokit/graphql");
+const { graphql } = require('@octokit/graphql');
 
 // CONFIG START
 
@@ -281,17 +281,17 @@ async function getCommits() {
 
 Repository: [${owner}/${repoName}](${repo.repository.url})
 
-Sprint Start (inclusive): ${new Date(startDate).toLocaleDateString("en-US",dateFormat)}
+Sprint Start (inclusive): ${new Date(startDate).toLocaleDateString("en-US",dateFormat)}  
 Sprint End (inclusive): ${new Date(endDate).toLocaleDateString("en-US",dateFormat)}
 
 Milestone: [${repo.repository.milestone.title}](${repo.repository.milestone.url})  
 Number of issues: ${repo.repository.milestone.issues.totalCount}
 
-Considered branch: ${branch}
-Start Commit (inclusive): [${commits[commits.length-1].oid}](${commits[commits.length-1].url})
+Considered branch: ${branch}  
+Start Commit (inclusive): [${commits[commits.length-1].oid}](${commits[commits.length-1].url})  
 End Commit (inclusive): [${commits[0].oid}](${commits[0].url})  
-Number of commits: ${commits.length}
-Number of pull requests: ${prs.length}
+Number of commits: ${commits.length}  
+Number of pull requests: ${prs.length}  
 
 ## Issues
 `;
@@ -316,63 +316,63 @@ Number of pull requests: ${prs.length}
         output += '*Warning: Issue is still open.*\n\n';
       }
         
-      output += `Id: #${issue.number}\nLink: <${issue.url}>\n`;
+      output += `Id: #${issue.number}  \nLink: <${issue.url}>  \n`;
 
       
       if (!issue.prs) {
-        output += `Associated PR: No pull-request linked to this issue found in this sprint\n`;
+        output += `Associated PR: No pull-request linked to this issue found in this sprint  \n`;
       } else if (issue.prs.length === 1) {
-        output += `Associated PR: <${issue.prs[0].url}>\n`;
+        output += `Associated PR: <${issue.prs[0].url}>  \n`;
         if (issue.prs[0].state !== 'MERGED') {
           output += `*Warning: pull-request state is ${issue.prs[0].state}*\n`;
         }
         const mergedAt = new Date(issue.prs[0].mergedAt)
         if (mergedAt > new Date(endDate) ) {
-          output += `*Warning: PR <${issue.prs[0].url}> merged after Sprint*\n`;
+          output += `*Warning: PR <${issue.prs[0].url}> merged after Sprint*  \n`;
         } else if (mergedAt < new Date(startDate)) {
-          output += `*Warning: PR <${issue.prs[0].url}> merged before Sprint*\n`;
+          output += `*Warning: PR <${issue.prs[0].url}> merged before Sprint*  \n`;
         }
       } else {
         output += `Associated PRs:\n\n`;
         issue.prs.map(pr => {
-          output += `- <${pr.url}>\n`;
+          output += `- <${pr.url}>  \n`;
           if (pr.state !== 'MERGED') {
-            output += `*Warning: pull-request state is ${pr.state}*\n`;
+            output += `*Warning: pull-request state is ${pr.state}*  \n`;
           }
           const mergedAt = new Date(issue.pr.mergedAt)
           if (mergedAt > new Date(endDate) ) {
-            output += `*Warning: PR <${issue.pr.url}> merged after Sprint*\n`;
+            output += `*Warning: PR <${issue.pr.url}> merged after Sprint*  \n`;
           } else if (mergedAt < new Date(startDate)) {
-            output += `*Warning: PR <${issue.pr.url}> merged before Sprint*\n`;
+            output += `*Warning: PR <${issue.pr.url}> merged before Sprint*  \n`;
           }
         });
       }
       let hasDifferentTeamCommits = false;
       if (!issue.commits) {
-        output += `\nAssociated Commits: No commits linked to this issue found in this sprint\n`;
+        output += `Associated Commits: No commits linked to this issue found in this sprint  \n`;
       } else {
         hasDifferentTeamCommits = !issue.commits.every(commit => commit.team === issue.commits[0].team);
         if (issue.commits.length === 1) {
-          output += `\nAssociated Commit: [${issue.commits[0].oid}](${issue.commits[0].url})\n`;
+          output += `Associated Commit: [${issue.commits[0].oid}](${issue.commits[0].url})  \n`;
           if (issue.commits[0].warning) {
-            output += `*Warning: ${issue.commits[0].warning}*\n`
+            output += `*Warning: ${issue.commits[0].warning}*  \n`
           }
           if (!issue.commits[0].team) {
-            output += `*Warning: No team found for commit*`;
+            output += `*Warning: No team found for commit*  `;
           } else if (!issueTeams.includes(issue.commits[0].team)) {
-            output += `*Warning: Commit Team **${issue.commits[0].team}** not the same as in issue*`
+            output += `*Warning: Commit Team **${issue.commits[0].team}** not the same as in issue*  `
           }
         } else {
           output += `\nAssociated Commits:\n\n`;
           issue.commits.map(commit => {
-            output += `- [${commit.oid}](${commit.url}) ${(hasDifferentTeamCommits) && '[Team: ' + commit.team + ']\n'}`;
+            output += `- [${commit.oid}](${commit.url}) ${(hasDifferentTeamCommits) && '[Team: ' + commit.team + ']  \n'}`;
             if (commit.warning) {
-              output += `*Warning: ${commit.warning}*\n`;
+              output += `*Warning: ${commit.warning}*  \n`;
             }
             if (!commit.team) {
-              output += `*Warning: No team found for commit*\n`;
+              output += `*Warning: No team found for commit*  \n`;
             } else if (!issueTeams.includes(commit.team)) {
-              output += `*Warning: Commit Team **${commit.team}** not the same as in issue*\n`
+              output += `*Warning: Commit Team **${commit.team}** not the same as in issue*  \n`
             }
         })
       };
@@ -386,7 +386,7 @@ Number of pull requests: ${prs.length}
     notAssignableCommits.map(commit => {
       output += `\n### ${commit.messageHeadline}
 
-Id: [${commit.oid}](${commit.url})\n${(commit.team && 'Team: ' + commit.team + '\n')}`;
+Id: [${commit.oid}](${commit.url})  \n${(commit.team && 'Team: ' + commit.team + '\n')}`;
     });
 
     fs.writeFile('./report.md', output, err => {
