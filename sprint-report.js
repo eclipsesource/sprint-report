@@ -41,19 +41,17 @@ const mailToTeamName = {
   'eclipsesource.com': 'EclipseSource',
   'foobar.foobar': 'Foobar'
 }
-
-const startDate = '2021-12-01';
-const endDate = '2021-12-31';
-const startCommit = '5d9783985a270588c79304bbd5e498884c649752';
-const endCommit = 'd83a127d96e3d0f3d10dabb5865bdfa29acbaff0';
+const startCommit = 'ed2872fe3fe6897a205a01f390832a37db88bee3'; // First commit to be considered
+const endCommit = '2c604ba8f6f9b77947b7d8e1cb79de985737808c'; // Last commit to be considered
+const startDate = ''; // default date is startCommit date
+const endDate = ''; // default date is endCommit date
 const blacklistIssues = ['invalid']; // exclude issues with one of these labels
 const whitelistIssues = []; // exlude all issues NOT with one of these labels - otherwise leave empty
 let branch = 'main';
 // CONFIG END
 
 if (!personalAccessToken) {
-  console.log("Please provide a personal Access Token to use GitHub's GraphQL endpoint.")
-  return;
+  throw "Please provide a personal Access Token to use GitHub's GraphQL endpoint.";
 }
 const graphqlWithAuth = graphql.defaults({
       headers: {
@@ -72,7 +70,7 @@ async function getIssues() {
       title
       dueOn
       url
-      issues(first:20) {
+      issues(first:100) {
         totalCount
         nodes {
           id
@@ -93,13 +91,90 @@ async function getIssues() {
     }
   }
 }`);
-  
 }
 
-// Currently the 100 PRs before the endDate are retrieved
+async function getCommits() {
+  let startCommitIndex = -1;
+  let cursor = '';
+  commits = [];
+  while(startCommitIndex === -1){
+    let query = await graphqlWithAuth(`{
+      repository(name: "${repoName}", owner: "${owner}") {
+        defaultBranchRef {
+          name
+        }
+        ref(qualifiedName: "${branch}"){
+          target {
+            ... on Commit {
+              history(first: 100${(cursor) && ', after:"' + (cursor) + '"'}){
+                edges {
+                  node {
+                    messageHeadline
+                    message
+                    oid
+                    abbreviatedOid
+                    url
+                    committedDate
+                    author {
+                      email
+                    }
+                    associatedPullRequests(first:10) {
+                      nodes {
+                        title
+                        createdAt
+                        mergedAt
+                        body
+                        url
+                        state
+                        headRef {
+                          name
+                        }
+                        author {
+                          login
+                        }
+                        closingIssuesReferences(first:10) {
+                          nodes {
+                            title
+                            number
+                            url
+                          }
+                        }
+                        
+                      }
+                    }
+                  }
+                  cursor
+                }
+              }
+            }
+          }
+        }
+      }
+    }`);
+    let queryCommits = query.repository.ref.target.history.edges;
+    cursor = queryCommits[queryCommits.length - 1].cursor;
+    
+    startCommitIndex = queryCommits.map(c => c.node.oid).indexOf(startCommit);
+    if (startCommitIndex !== -1){
+      queryCommits.length = startCommitIndex + 1;
+    }
+    if (commits.length === 0){
+      const endCommitIndex = queryCommits.map(c => c.node.oid).indexOf(endCommit);
+      if (endCommitIndex !== -1){
+        queryCommits.splice(0, endCommitIndex);
+        commits = queryCommits;
+      }
+    } else {
+      commits.push(...queryCommits);
+    }
+  }
+  return commits;
+}
+
+// Get open PR's (merged PR's are retrieved through commits)
 async function getPRs() {
   return await graphqlWithAuth(`{
-  search(query: "repo:${owner}/${repoName} is:pr created:<=${endDate}", type: ISSUE, last: 100) {
+  search(query: "repo:${owner}/${repoName} is:pr is:open", type: ISSUE, last: 100) {
     nodes {
       ... on PullRequest {
         title
@@ -127,151 +202,140 @@ async function getPRs() {
 }`);
 }
 
-async function getCommits() {
-  let timeQuery = '';
-  // Convert to Git Timestamp Format
-  if (startDate) {
-    const d = new Date(startDate);
-    const startDateQuery = d.getFullYear() + "-" + ("0" + (d.getMonth()+1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) + "T" + ("0" + (d.getHours() - 1)).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
-    timeQuery += `since:"${startDateQuery}"`
-  }
-  if (endDate) {
-    const d = new Date(endDate);
-    const endDateQuery = d.getFullYear() + "-" + ("0" + (d.getMonth()+1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) + "T" + ("0" + (d.getHours() - 1)).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
-    timeQuery += `until:"${endDateQuery}"`
-  }
-  return await graphqlWithAuth(`{
-  repository(name: "${repoName}", owner: "${owner}") {
-    defaultBranchRef {
-      name
-    }
-    ref(qualifiedName: "${branch}"){
-      target {
-        ... on Commit {
-          history(first: 100${(timeQuery) && ',' + timeQuery}){
-            totalCount
-            nodes { 
-              messageHeadline
-              message
-              oid
-              abbreviatedOid
-              url
-              committedDate
-              author {
-                email
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}`);
-}
-
 // THE MAIN FUNCTION
 (async () => {
   try {
     
     let notAssignableCommits = [];
-    let notAssignablePRs = []
 
     // Get issues for milestone
     const repo = await getIssues();
-    let issues = repo.repository.milestone.issues.nodes;
-
+    let issues = repo.repository.milestone?.issues?.nodes;
     if (!branch) {
       branch = repo.repository.defaultBranchRef.name;
     }
+    if (!issues || !issues.length){
+      throw `No issues found for milestone ${milestoneNumber}`;
+    }
 
-    // Get PR's
+    // Get Commits
+    const commits = await getCommits();
+
+    let prCount = 0;
+    let commitCount = commits.length;
+
+    commits.map(commit => {
+      const authorDomain = commit.node.author.email.match(/(?:@)(.*)/)[1];
+      if (mailToTeamName[authorDomain]) {
+        commit.node.team = mailToTeamName[authorDomain]
+      }
+
+      // Get linked issues via commit message
+      let matches = [];
+
+      let prs = commit.node.associatedPullRequests.nodes;
+      if (prs.length === 1){
+        let pr = prs[0];
+        if (pr.closingIssuesReferences.nodes.length > 0) {
+          pr.closingIssuesReferences.nodes.map(issueRef => {
+            const index = issues.map(issue => issue.number).indexOf(issueRef.number);
+            if (index >= 0 && index < issues.length) {
+              matches.push(issueRef.number);
+              if (!issues[index].prs){
+                issues[index].prs = [pr]
+                prCount++;
+              } else if (!issues[index].prs.some(p => p.url === pr.url)) {
+                issues[index].prs.push(pr);
+                prCount++;
+              }
+            }
+          });
+        }
+        // Get issue linked to pr via branch-name
+        else if (pr.headref && pr.headRef.name.search(/gh-?/i) !== -1) {
+          const issueNumber = Number(pr.headRef.name.match(/(?:gh-?)([0-9]+)/i)[1]);
+          const index = issues.map(issue => issue.number).indexOf(issueNumber);
+          if (index >= 0 && index < issues.length && (!issues[index].prs || !issues[index].prs.includes(pr))) {
+            matches.push(issueRef.number);
+            (issues[index].prs) ? issues[index].prs.push(pr) : issues[index].prs = [pr];
+            prCount++;
+          }
+        }
+      }
+
+      if (matches.length === 0){
+        if (commit.node.messageHeadline.search(/(gh-)([0-9]+)/i) !== -1) {
+          matches = commit.node.messageHeadline.match(/(gh-)([0-9]+)/ig);
+        } else if (commit.node.message.search(/((fix|resolve|close).*(gh-)|#)([0-9]+)/i) !== -1) {
+          matches = commit.node.message.match(/((fix|resolve|close).*(gh-)|#)([0-9]+)/ig);
+        } else if (commit.node.message.search(/((gh-)|#)([0-9]+)/i) !== -1) {
+          matches = commit.node.message.match(/((gh-)|#)([0-9]+)/ig);
+        }
+        matches = matches.map(issue => Number(issue.match(/(?:gh-|#)([0-9]+)/i)[1]));
+      }
+      
+      if (matches) {
+        let hasIssue = false;
+        matches.map(issueNo => {
+          const index = issues.map(issue => issue.number).indexOf(issueNo);
+          if (index >= 0 && index < issues.length) {
+            (issues[index].commits) ? issues[index].commits.push(commit.node) : issues[index].commits = [commit.node];
+            hasIssue = true;
+          } else {
+            commit.node.warning = 'Commit is linking to issue not in milestone'
+          }
+        });
+        if (!hasIssue) {
+          notAssignableCommits.push(commit.node)
+        }
+      } else {
+        commit.node.warning = 'Commit not linking to any issue'
+        notAssignableCommits.push(commit.node);
+      }
+    });
+
+    // Get open PR's
     const query = await getPRs();
     const prs = query.search.nodes;
-    
     prs.map((pr, i) => {
-
       if (pr.closingIssuesReferences.nodes.length > 0) {
         pr.closingIssuesReferences.nodes.map(issueRef => {
           const index = issues.map(issue => issue.number).indexOf(issueRef.number);
           if (index >= 0 && index < issues.length) {
             (issues[index].prs) ? issues[index].prs.push(pr) : issues[index].prs = [pr];
-          } else {
-            notAssignablePRs.unshift(i);
+            prCount++;
           }
         });
-
       }
       // Get issue linked to pr via branch-name
       else if (pr.headRef.name.search(/gh-?/i) !== -1) {
-
         const issueNumber = Number(pr.headRef.name.match(/(?:gh-?)([0-9]+)/i)[1]);
         const index = issues.map(issue => issue.number).indexOf(issueNumber);
         if (index >= 0 && index < issues.length) {
           (issues[index].prs) ? issues[index].prs.push(pr) : issues[index].prs = [pr];
-        } else {
-          notAssignablePRs.unshift(i);
+          prCount++;
         }
-      } else {
-        notAssignablePRs.unshift(i);
       }
     });
-    notAssignablePRs.map(prIndex => prs.splice(prIndex, 1));
 
-    // Get Commits
-    const comQuery = await getCommits();
-    let commits = comQuery.repository.ref.target.history.nodes;
-
-    const startCommitIndex = commits.map(c => c.oid).indexOf(startCommit);
-    if (startCommitIndex > 0) {
-      commits.splice(startCommitIndex+1);
-    }
-
-    const endCommitIndex = commits.map(c => c.oid).indexOf(endCommit);
-    if (endCommitIndex > 0) {
-      commits.splice(0, endCommitIndex);
-    }
-
-    commits.map(commit => {
-      const authorDomain = commit.author.email.match(/(?:@)(.*)/)[1];
-      if (mailToTeamName[authorDomain]) {
-        commit.team = mailToTeamName[authorDomain]
+    issues = issues.filter(issue => {
+      let filtered = !issue.labels.nodes.some(label => blacklistIssues.includes(label.name));
+      if (!filtered){
+        prCount -= issue.prs.length;
+        commitCount -= issue.commits.length;
       }
-
-      // Get linked issues via commit message
-      let matches = []
-      if (commit.messageHeadline.search(/(gh-)([0-9]+)/i) !== -1) {
-        matches = commit.messageHeadline.match(/(gh-)([0-9]+)/ig);
-
-      } else if (commit.message.search(/((fix|resolve|close).*(gh-)|#)([0-9]+)/i) !== -1) {
-        matches = commit.message.match(/((fix|resolve|close).*(gh-)|#)([0-9]+)/ig);
-
-      } else if (commit.message.search(/((gh-)|#)([0-9]+)/i) !== -1) {
-        matches = commit.message.match(/((gh-)|#)([0-9]+)/ig);
-      }
-
-      if (matches) {
-        const commitIssues = matches.map(issue => Number(issue.match(/(?:gh-|#)([0-9]+)/i)[1]));
-        let hasIssue = false;
-        commitIssues.map(issueNo => {
-          const index = issues.map(issue => issue.number).indexOf(issueNo);
-          if (index >= 0 && index < issues.length) {
-            (issues[index].commits) ? issues[index].commits.push(commit) : issues[index].commits = [commit];
-            hasIssue = true;
-          } else {
-            commit.warning = 'Commit is linking to issue not in milestone'
-          }
-        });
-        if (!hasIssue) {
-          notAssignableCommits.push(commit)
-        }
-        
-      } else {
-        commit.warning = 'Commit not linking to any issue'
-        notAssignableCommits.push(commit);
-      }
-
-
+      return filtered;
     });
+    if (whitelistIssues.length > 0) {
+      issues = issues.filter(issue => {
+        let filtered = issue.labels.nodes.some(label => whitelistIssues.includes(label.name));
+        if (!filtered){
+          prCount -= issue.prs.length;
+          commitCount -= issue.commits.length;
+        }
+        return filtered;
+      });
+    }
 
     // Markdown Generation
     const dateFormat = {year: 'numeric', month: 'long', day: 'numeric'}
@@ -281,24 +345,21 @@ async function getCommits() {
 
 Repository: [${owner}/${repoName}](${repo.repository.url})
 
-Sprint Start (inclusive): ${new Date(startDate).toLocaleDateString("en-US",dateFormat)}  
-Sprint End (inclusive): ${new Date(endDate).toLocaleDateString("en-US",dateFormat)}
+Sprint Start (inclusive): ${new Date((startDate) ? startDate : commits[commits.length-1].node.committedDate).toLocaleDateString("en-US", dateFormat)}  
+Sprint End (inclusive): ${new Date((endDate) ? endDate : commits[0].node.committedDate).toLocaleDateString("en-US", dateFormat)}
 
 Milestone: [${repo.repository.milestone.title}](${repo.repository.milestone.url})  
-Number of issues: ${repo.repository.milestone.issues.totalCount}
+Number of issues: ${issues.length}
 
 Considered branch: ${branch}  
-Start Commit (inclusive): [${commits[commits.length-1].oid}](${commits[commits.length-1].url})  
-End Commit (inclusive): [${commits[0].oid}](${commits[0].url})  
-Number of commits: ${commits.length}  
-Number of pull requests: ${prs.length}  
+Start Commit (inclusive): [${commits[commits.length-1].node.oid}](${commits[commits.length-1].node.url})  
+End Commit (inclusive): [${commits[0].node.oid}](${commits[0].node.url})  
+Number of commits: ${commitCount}  
+Number of pull requests:  ${prCount}
 
 ## Issues
 `;
-    issues = issues.filter(issue => !issue.labels.nodes.some(label => blacklistIssues.includes(label.name)));
-    if (whitelistIssues.length > 0) {
-      issues = issues.filter(issue => issue.labels.nodes.some(label => whitelistIssues.includes(label.name)));
-    }
+    
     issues.map(issue => {
       let issueTeams = []
       issue.labels.nodes.map(label => {
@@ -338,12 +399,13 @@ Number of pull requests: ${prs.length}
           output += `- <${pr.url}>  \n`;
           if (pr.state !== 'MERGED') {
             output += `*Warning: pull-request state is ${pr.state}*  \n`;
-          }
-          const mergedAt = new Date(issue.pr.mergedAt)
-          if (mergedAt > new Date(endDate) ) {
-            output += `*Warning: PR <${issue.pr.url}> merged after Sprint*  \n`;
-          } else if (mergedAt < new Date(startDate)) {
-            output += `*Warning: PR <${issue.pr.url}> merged before Sprint*  \n`;
+          } else {
+            const mergedAt = new Date(pr.mergedAt)
+            if (mergedAt > new Date(endDate) ) {
+              output += `*Warning: PR <${pr.url}> merged after Sprint*  \n`;
+            } else if (mergedAt < new Date(startDate)) {
+              output += `*Warning: PR <${pr.url}> merged before Sprint*  \n`;
+            }
           }
         });
       }
@@ -358,14 +420,14 @@ Number of pull requests: ${prs.length}
             output += `*Warning: ${issue.commits[0].warning}*  \n`
           }
           if (!issue.commits[0].team) {
-            output += `*Warning: No team found for commit*  `;
+            output += `*Warning: No team found for commit*  \n`;
           } else if (!issueTeams.includes(issue.commits[0].team)) {
-            output += `*Warning: Commit Team **${issue.commits[0].team}** not the same as in issue*  `
+            output += `*Warning: Commit Team **${issue.commits[0].team}** not the same as in issue*  \n`
           }
         } else {
           output += `\nAssociated Commits:\n\n`;
           issue.commits.map(commit => {
-            output += `- [${commit.oid}](${commit.url}) ${(hasDifferentTeamCommits) && '[Team: ' + commit.team + ']  \n'}`;
+            output += `- [${commit.oid}](${commit.url}) ${(hasDifferentTeamCommits) ? '[Team: ' + commit.team + ']  \n': '  \n'}`;
             if (commit.warning) {
               output += `*Warning: ${commit.warning}*  \n`;
             }
@@ -374,11 +436,12 @@ Number of pull requests: ${prs.length}
             } else if (!issueTeams.includes(commit.team)) {
               output += `*Warning: Commit Team **${commit.team}** not the same as in issue*  \n`
             }
-        })
-      };
+          });
+          output+= '\n';
+        };
       }
       if (issueTeams.length === 1 && !hasDifferentTeamCommits) {
-        output += `\nTeam: ${issueTeams[0]}\n`;
+        output += `Team: ${issueTeams[0]}\n`;
       }
     });
 
@@ -386,7 +449,7 @@ Number of pull requests: ${prs.length}
     notAssignableCommits.map(commit => {
       output += `\n### ${commit.messageHeadline}
 
-Id: [${commit.oid}](${commit.url})  \n${(commit.team && 'Team: ' + commit.team + '\n')}`;
+Id: [${commit.oid}](${commit.url})  \n${(commit.team ? 'Team: ' + commit.team + '\n' : '\n')}`;
     });
 
     fs.writeFile('./report.md', output, err => {
@@ -396,7 +459,7 @@ Id: [${commit.oid}](${commit.url})  \n${(commit.team && 'Team: ' + commit.team +
       }
     });
 
-    console.log("Sprint-report has been successfully generated.")
+    console.log("Sprint-report has been successfully generated.");
   } catch (error) {
     console.error(error);
   }
